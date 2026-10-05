@@ -1,0 +1,676 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>Block Breaker Ultimate</title>
+<style>
+body {
+    margin:0;
+    background:#05070f;
+    display:flex;
+    justify-content:center;
+    align-items:center;
+    height:100vh;
+}
+canvas {
+    border:3px solid #0ff;
+    background:#000;
+}
+</style>
+</head>
+<body>
+<canvas id="game" width="900" height="600"></canvas>
+
+<script>
+const canvas = document.getElementById("game");
+const ctx = canvas.getContext("2d");
+
+let previousState = "menu";
+
+let saveMessage = "";
+let saveMessageTimer = 0;
+
+
+// ================= CORE STATE =================
+let gameState="menu"; 
+// menu, settings, map, playing, paused, cutscene, skill
+
+let level=1, maxLevel=10;
+let score=0, lives=3;
+let unlocked=[1];
+let hover=-1;
+
+// ================= SETTINGS =================
+let settings = {
+    fullscreen:false,
+    effects:true,
+    music:true,
+    sfx:true
+};
+
+// ================= META PROGRESSION =================
+let meta = {
+    paddle:0,
+    speed:0,
+    lives:0,
+    skillPoints:0
+};
+
+// ================= ACHIEVEMENTS =================
+let achievements = {
+    firstBrick:false,
+    multiball:false,
+    bossKill:false
+};
+
+// ================= STORY =================
+
+let cutsceneMode = "level"; // "intro", "level", "end"
+
+const story = {
+1:"You enter the broken Grid.",
+2:"The system resists.",
+3:"Corruption spreads.",
+4:"The core draws near.",
+5:"A Guardian awakens.",
+6:"Layers collapse.",
+7:"The machine fights back.",
+8:"Reality fragments.",
+9:"Only the core remains.",
+10:"The Intelligence reveals itself."
+};
+
+// ================= SAVE =================
+function saveGame(){
+    const data = {
+        level, score, lives, unlocked, meta, settings, achievements,
+        snapshot: currentSnapshot
+    };
+    localStorage.setItem("blockBreakerSave", JSON.stringify(data));
+
+    saveMessage = "Game Saved!";
+    saveMessageTimer = 120;
+}
+
+
+function loadGame(){
+    let d = localStorage.getItem("blockBreakerSave");
+    if(!d) return false;
+    let data = JSON.parse(d);
+    level=data.level;
+    score=data.score;
+    lives=data.lives;
+    unlocked=data.unlocked;
+    meta=data.meta;
+    settings=data.settings;
+    achievements=data.achievements || achievements;
+    currentSnapshot = data.snapshot || null;
+    return true;
+}
+
+// ================= AUDIO =================
+const audio = {
+    menu:new Audio("assets/music/menu.mp3"),
+    game:new Audio("assets/music/game.mp3"),
+    hit:new Audio("assets/sfx/hit.wav"),
+    power:new Audio("assets/sfx/power.wav"),
+    win:new Audio("assets/sfx/win.wav"),
+    lose:new Audio("assets/sfx/lose.wav"),
+    laser:new Audio("assets/sfx/laser.wav")
+};
+audio.menu.loop=true;
+audio.game.loop=true;
+
+// ================= CAMERA FX =================
+let shake=0, flash=0;
+
+// ================= OBJECTS =================
+let paddle, balls, bricks, powerups, boss, lasers, particles;
+
+// ================= SNAPSHOT FOR RESPAWN =================
+let currentSnapshot = null;
+
+// ================= MENUS =================
+const mainMenu = ["New Game","Continue","World Map","Skill Tree","Settings","Exit"];
+const settingsMenu = ["Fullscreen","Effects","Music","SFX","Back"];
+const pauseMenu = ["Resume","Save","Skill Tree","Main Menu"];
+const skillMenu = ["Paddle Size","Ball Speed","Extra Life","Laser Duration","Back"];
+
+// ================= INPUT =================
+let keys={};
+window.addEventListener("keydown",e=>{
+    keys[e.key]=true;
+    if(e.key==="Escape"){
+        if(gameState==="playing") gameState="paused";
+        else if(gameState==="paused") gameState="playing";
+    }
+});
+window.addEventListener("keyup",e=>keys[e.key]=false);
+
+// ================= FULLSCREEN =================
+function toggleFullscreen(){
+    if(!document.fullscreenElement){
+        canvas.requestFullscreen();
+        settings.fullscreen=true;
+    } else {
+        document.exitFullscreen();
+        settings.fullscreen=false;
+    }
+}
+
+// ================= START LEVEL =================
+function startLevel(lvl){
+    if(lvl) level=lvl;
+
+    if(currentSnapshot){
+        loadSnapshot();
+        gameState="playing";
+        return;
+    }
+
+    resetLevelState();
+    generateLevel();
+    saveSnapshot();
+    cutsceneMode = (level === 1 && !currentSnapshot) ? "intro" : "level";
+    gameState="cutscene";
+}
+
+// ================= RESET =================
+function resetLevelState(){
+    paddle = {
+        x:400, y:560, w:120 + meta.paddle*20, h:16, speed:9, laser:false, laserTimer:0
+    };
+    balls = [{
+        x:450, y:540, dx:4+meta.speed, dy:-4-meta.speed, r:8, power:false
+    }];
+    bricks=[];
+    powerups=[];
+    boss=null;
+    lasers=[];
+    particles=[];
+}
+
+// ================= SNAPSHOT =================
+function saveSnapshot(){
+    currentSnapshot = JSON.parse(JSON.stringify({
+        paddle, balls, bricks, boss
+    }));
+}
+
+function loadSnapshot(){
+    if(!currentSnapshot) return;
+    paddle = JSON.parse(JSON.stringify(currentSnapshot.paddle));
+    balls = [{
+        x:paddle.x+paddle.w/2, y:paddle.y-10, dx:4, dy:-4, r:8, power:false
+    }];
+    bricks = JSON.parse(JSON.stringify(currentSnapshot.bricks));
+    boss = JSON.parse(JSON.stringify(currentSnapshot.boss));
+    powerups=[];
+    lasers=[];
+    particles=[];
+}
+
+// ================= GENERATE LEVEL =================
+function generateLevel(){
+    if(level===5 || level===10){
+        boss={x:250,y:80,w:400,h:80,hp:120+level*20,dir:2};
+        return;
+    }
+    let rows=4+level;
+    for(let r=0;r<rows;r++){
+        for(let c=0;c<10;c++){
+            bricks.push({x:60+c*78,y:80+r*32,w:70,h:24});
+        }
+    }
+}
+
+// ================= POWERUPS =================
+const powerTypes=["expand","multiball","laser","slow","power"];
+
+function spawnPower(x,y){
+    if(Math.random()<0.4){
+        powerups.push({
+            x,y,ySpeed:2,
+            type:powerTypes[Math.floor(Math.random()*powerTypes.length)]
+        });
+    }
+}
+
+// ================= UPDATE =================
+function update(){
+    if(shake>0) shake--;
+    if(flash>0) flash--;
+
+    if(gameState==="cutscene"){
+        cutsceneTimer++;
+        if(cutsceneTimer>180){
+            gameState="playing";
+            cutsceneTimer=0;
+            audio.menu.pause();
+            if(settings.music) audio.game.play().catch(()=>{});
+        }
+        return;
+    }
+
+    if(gameState!=="playing") return;
+
+    // Paddle
+    if(keys["ArrowLeft"]) paddle.x-=paddle.speed;
+    if(keys["ArrowRight"]) paddle.x+=paddle.speed;
+    paddle.x=Math.max(0,Math.min(canvas.width-paddle.w,paddle.x));
+
+    // Laser
+    if(paddle.laser){
+        paddle.laserTimer--;
+        if(paddle.laserTimer<=0) paddle.laser=false;
+        if(Math.random()<0.1){
+            lasers.push({x:paddle.x+10,y:paddle.y,dy:-8});
+            lasers.push({x:paddle.x+paddle.w-10,y:paddle.y,dy:-8});
+            if(settings.sfx) audio.laser.cloneNode().play().catch(()=>{});
+        }
+    }
+
+    for(let l of lasers) l.y+=l.dy;
+    lasers=lasers.filter(l=>l.y>0);
+
+    // Balls
+    for(let i=balls.length-1;i>=0;i--){
+        let b=balls[i];
+        b.x+=b.dx;
+        b.y+=b.dy;
+
+        particles.push({x:b.x,y:b.y,life:20});
+
+        if(b.x<b.r||b.x>canvas.width-b.r) b.dx*=-1;
+        if(b.y<b.r) b.dy*=-1;
+
+        if(b.y>canvas.height){
+            balls.splice(i,1);
+            if(balls.length===0){
+                lives--;
+                flash=10;
+                if(lives<=0){ gameState="menu"; return; }
+                loadSnapshot(); // <-- RESPAWN IN PLACE
+            }
+            continue;
+        }
+
+        if(b.x>paddle.x && b.x<paddle.x+paddle.w && b.y+b.r>paddle.y){
+            b.dy=-Math.abs(b.dy);
+        }
+
+        // bricks
+        for(let j=bricks.length-1;j>=0;j--){
+            let br=bricks[j];
+            if(b.x>br.x&&b.x<br.x+br.w&&b.y>br.y&&b.y<br.y+br.h){
+                if(!b.power) b.dy*=-1;
+                bricks.splice(j,1);
+                score+=100;
+                shake=6;
+                if(settings.sfx) audio.hit.cloneNode().play().catch(()=>{});
+                spawnPower(br.x+br.w/2, br.y+br.h/2);
+                achievements.firstBrick=true;
+                break;
+            }
+        }
+
+        // boss
+        if(boss && b.x>boss.x&&b.x<boss.x+boss.w&&b.y>boss.y&&b.y<boss.y+boss.h){
+            boss.hp--;
+            if(!b.power) b.dy*=-1;
+            shake=10; flash=6;
+        }
+    }
+
+    // lasers hit
+    for(let i=lasers.length-1;i>=0;i--){
+        let l=lasers[i];
+        for(let j=bricks.length-1;j>=0;j--){
+            let br=bricks[j];
+            if(l.x>br.x&&l.x<br.x+br.w&&l.y>br.y&&l.y<br.y+br.h){
+                bricks.splice(j,1);
+                lasers.splice(i,1);
+                break;
+            }
+        }
+        if(boss && l.x>boss.x&&l.x<boss.x+boss.w&&l.y>boss.y&&l.y<boss.y+boss.h){
+            boss.hp--;
+            lasers.splice(i,1);
+        }
+    }
+
+    // powerups
+    for(let i=powerups.length-1;i>=0;i--){
+        let p=powerups[i];
+        p.y+=p.ySpeed;
+        if(p.y>canvas.height) powerups.splice(i,1);
+        else if(p.x>paddle.x&&p.x<paddle.x+paddle.w&&p.y>paddle.y){
+            applyPower(p.type);
+            if(settings.sfx) audio.power.cloneNode().play().catch(()=>{});
+            powerups.splice(i,1);
+        }
+    }
+
+    // boss move
+    if(boss){
+        boss.x+=boss.dir;
+        if(boss.x<100||boss.x>canvas.width-boss.w-100) boss.dir*=-1;
+    }
+
+    // particles
+    for(let i=particles.length-1;i>=0;i--){
+        particles[i].life--;
+        if(particles[i].life<=0) particles.splice(i,1);
+    }
+
+    // win
+    if((bricks.length===0 && !boss) || (boss && boss.hp<=0)){
+        if(boss) achievements.bossKill=true;
+        if(!unlocked.includes(level+1)) unlocked.push(level+1);
+        meta.skillPoints++;
+        currentSnapshot=null;
+        if(level === 10){
+            cutsceneMode = "end";
+            gameState = "cutscene";
+        } else {
+            gameState="map";
+        }
+
+    }
+}
+
+// ================= APPLY POWER =================
+function applyPower(t){
+    if(t==="expand") paddle.w+=30;
+    if(t==="multiball"){
+        let b=balls[0];
+        balls.push({x:b.x,y:b.y,dx:-b.dx,dy:b.dy,r:8,power:false});
+        achievements.multiball=true;
+    }
+    if(t==="laser"){ paddle.laser=true; paddle.laserTimer=600; }
+    if(t==="slow") for(let b of balls){ b.dx*=0.7; b.dy*=0.7; }
+    if(t==="power") for(let b of balls){ b.power=true; }
+}
+
+// ================= DRAW =================
+let cutsceneTimer=0;
+
+function draw(){
+    let ox=0, oy=0;
+    if(shake>0){
+        ox=(Math.random()-0.5)*10;
+        oy=(Math.random()-0.5)*10;
+    }
+    ctx.save();
+    ctx.translate(ox,oy);
+
+    ctx.fillStyle="#020410";
+    ctx.fillRect(0,0,canvas.width,canvas.height);
+
+    if(flash>0){
+        ctx.fillStyle="rgba(255,255,255,0.3)";
+        ctx.fillRect(0,0,canvas.width,canvas.height);
+    }
+
+    if(gameState==="menu"){ drawMenu(mainMenu,"BLOCK BREAKER ULTIMATE"); return; }
+    if(gameState==="settings"){ drawMenu(settingsMenu,"Settings"); return; }
+    if(gameState==="paused"){ drawMenu(pauseMenu,"Paused"); return; }
+    if(gameState==="skill"){ drawSkillTree(); return; }
+    if(gameState==="map"){ drawMap(); return; }
+
+    if(gameState==="cutscene"){ drawCutscene(); return; }
+function drawSkillTree(){
+    ctx.fillStyle="#0ff";
+    ctx.font="40px Arial";
+    ctx.fillText("Skill Tree",260,120);
+
+    ctx.font="22px Arial";
+    ctx.fillText("Skill Points: " + meta.skillPoints, 340, 160);
+
+    const list = [
+        "Paddle Size",
+        "Ball Speed",
+        "Extra Life",
+        "Laser Duration",
+        "Back"
+    ];
+
+    const values = [
+        meta.paddle,
+        meta.speed,
+        meta.lives,
+        0,
+        ""
+    ];
+
+    for(let i=0;i<list.length;i++){
+        ctx.fillStyle = hover===i ? "#ff0" : "#fff";
+
+        let text = list[i];
+        if(i < 4){
+            text += "  [ Level " + values[i] + " ]";
+        }
+
+        ctx.fillText(text, 280, 240 + i*45);
+    }
+}
+
+
+    // particles
+    for(let p of particles){
+        ctx.fillStyle="rgba(0,255,255,"+(p.life/20)+")";
+        ctx.fillRect(p.x,p.y,3,3);
+    }
+
+    // paddle
+    ctx.fillStyle=paddle.laser?"#0ff":"#fff";
+    ctx.fillRect(paddle.x,paddle.y,paddle.w,paddle.h);
+
+    // balls
+    ctx.fillStyle="#0ff";
+    for(let b of balls){
+        ctx.beginPath(); ctx.arc(b.x,b.y,b.r,0,Math.PI*2); ctx.fill();
+    }
+
+    // bricks
+    ctx.fillStyle="#f44";
+    for(let br of bricks) ctx.fillRect(br.x,br.y,br.w,br.h);
+
+    // boss
+    if(boss){
+        ctx.fillStyle="#f0f";
+        ctx.fillRect(boss.x,boss.y,boss.w,boss.h);
+        ctx.fillStyle="#fff";
+        ctx.fillText("Boss HP: "+boss.hp,380,40);
+    }
+
+    // lasers
+    ctx.fillStyle="#0ff";
+    for(let l of lasers) ctx.fillRect(l.x-2,l.y,4,12);
+
+    // powerups
+    for(let p of powerups){
+        ctx.fillStyle =
+            p.type==="expand"?"#0f0":
+            p.type==="multiball"?"#ff0":
+            p.type==="laser"?"#0ff":
+            p.type==="slow"?"#f0f":"#f00";
+        ctx.fillRect(p.x-10,p.y-10,20,20);
+    }
+
+    if(saveMessageTimer > 0){
+    ctx.fillStyle="rgba(0,0,0,0.7)";
+    ctx.fillRect(330, 10, 240, 40);
+    ctx.fillStyle="#0f0";
+    ctx.font="20px Arial";
+    ctx.fillText(saveMessage, 380, 38);
+    saveMessageTimer--;
+    if(saveMessageTimer === 0){
+        saveMessage = "";
+    }
+    }
+
+
+    // HUD
+    ctx.fillStyle="#fff";
+    ctx.fillText("Score: "+score,20,30);
+    ctx.fillText("Lives: "+lives,20,60);
+    ctx.fillText("Level: "+level,20,90);
+    ctx.fillText("ESC = Pause",760,30);
+
+    ctx.restore();
+}
+
+// ================= DRAW HELPERS =================
+function drawMenu(list,title){
+    ctx.fillStyle="#0ff";
+    ctx.font="40px Arial";
+    ctx.fillText(title,200,150);
+    ctx.font="28px Arial";
+    list.forEach((o,i)=>{
+        ctx.fillStyle=hover===i?"#ff0":"#fff";
+        ctx.fillText(o,350,260+i*45);
+    });
+}
+
+function drawMap(){
+    ctx.fillStyle="#0ff";
+    ctx.font="36px Arial";
+    ctx.fillText("World Map",340,100);
+
+    ctx.font="20px Arial";
+    for(let i=1;i<=maxLevel;i++){
+        let x=100+i*70, y=300;
+        if(!unlocked.includes(i)) ctx.fillStyle="#555";
+        else if(i===5||i===10) ctx.fillStyle="#f0f";
+        else ctx.fillStyle="#0f0";
+        ctx.beginPath(); ctx.arc(x,y,25,0,Math.PI*2); ctx.fill();
+        ctx.fillStyle="#000"; ctx.fillText(i,x-5,y+5);
+    }
+
+    ctx.fillStyle="#fff";
+    ctx.fillText("Back",20,40);
+}
+
+function drawCutscene(){
+    ctx.fillStyle="#111";
+    ctx.fillRect(80,200,740,220);
+
+    ctx.fillStyle="#0ff";
+    ctx.fillRect(100,220,160,160); // portrait
+
+    ctx.fillStyle="#fff";
+    ctx.font="24px Arial";
+
+    let text = "";
+
+    if(cutsceneMode === "intro"){
+        text = "You enter the broken Grid. The system is corrupted.";
+    } else if(cutsceneMode === "end"){
+        text = "The Intelligence is defeated. The system is free.";
+    } else {
+        text = story[level];
+    }
+
+    ctx.fillText(text,300,320);
+    ctx.font="16px Arial";
+    ctx.fillText("Click to continue...", 600, 400);
+}
+
+
+// ================= LOOP =================
+function loop(){
+    update();
+    draw();
+    requestAnimationFrame(loop);
+}
+loop();
+
+// ================= MOUSE =================
+canvas.addEventListener("mousemove",e=>{
+    let y=e.offsetY;
+    hover=-1;
+
+    if(["menu","settings","paused","skill"].includes(gameState)){
+        let list = gameState==="menu"?mainMenu:
+                   gameState==="settings"?settingsMenu:
+                   gameState==="paused"?pauseMenu:
+                   skillMenu;
+        for(let i=0;i<list.length;i++){
+            if(y>245+i*45 && y<285+i*45) hover=i;
+        }
+    }
+});
+
+canvas.addEventListener("click",e=>{
+    let mx=e.offsetX, my=e.offsetY;
+
+    if(gameState==="menu" && hover!==-1){
+        if(hover===0){ level=1; score=0; lives=3+meta.lives; currentSnapshot=null; startLevel(1); }
+        if(hover===1){
+            if(loadGame()){
+        gameState="map";
+            } else {
+        saveMessage = "No Save Found!";
+        saveMessageTimer = 120;
+            }
+        }
+        if(hover===2){ gameState="map"; }
+if(hover===3){ previousState = "menu"; gameState="skill"; }
+        if(hover===4){ gameState="settings"; }
+        if(hover===5){ window.close(); }
+    }
+
+    if(gameState==="settings" && hover!==-1){
+        if(hover===0) toggleFullscreen();
+        if(hover===1) settings.effects=!settings.effects;
+        if(hover===2) settings.music=!settings.music;
+        if(hover===3) settings.sfx=!settings.sfx;
+        if(hover===4) gameState="menu";
+    }
+
+if(gameState==="paused" && hover!==-1){
+    if(hover===0) gameState="playing";
+    if(hover===1) saveGame();
+    if(hover===2){ previousState = "paused"; gameState="skill"; }
+    if(hover===3) gameState="settings"; // << CHANGED FROM menu
+}
+
+
+    if(gameState==="skill" && hover!==-1){
+        if(hover===0 && meta.skillPoints>0){ meta.paddle++; meta.skillPoints--; }
+        if(hover===1 && meta.skillPoints>0){ meta.speed++; meta.skillPoints--; }
+        if(hover===2 && meta.skillPoints>0){ meta.lives++; meta.skillPoints--; }
+        if(hover===3 && meta.skillPoints>0){ /* laser duration future */ meta.skillPoints--; }
+if(hover===4) gameState = previousState;
+    }
+
+    if(gameState==="map"){
+        if(mx<80 && my<60){ gameState="menu"; return; }
+
+        for(let i=1;i<=maxLevel;i++){
+            let x=100+i*70, y=300;
+            if(unlocked.includes(i)){
+                let dx=mx-x, dy=my-y;
+                if(dx*dx+dy*dy<25*25){
+                    currentSnapshot=null;
+                    startLevel(i);
+                }
+            }
+        }
+    }
+
+if(gameState==="cutscene"){
+    if(cutsceneMode === "intro"){
+        gameState = "playing";
+    } else if(cutsceneMode === "end"){
+        gameState = "menu";
+    } else {
+        gameState = "playing";
+    }
+}
+
+});
+</script>
+</body>
+</html>
